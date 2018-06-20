@@ -1,12 +1,18 @@
 defmodule Fluent do
-  def add(ref, tag, options // []) do
-    host = options[:host] || "localhost"
-    port = options[:port] || 24224
+  @spec add(Supervisor.supervisor(), String.t() | nil, map()) :: Supervisor.on_start_child()
+  def add(sup, tag, opts \\ %{}) do
+    host = Map.get(opts, :host, "localhost")
+    port = Map.get(opts, :port, 24224)
 
-    :gen_event.add_handler(ref, Fluent.Handler, { tag, host, port })
+    Supervisor.start_child(sup, [Fluent.Handler, {tag, host, port}])
   end
 
-  def post(ref, tag, data) do
-    :gen_event.notify(ref, { tag, data })
+  @spec post(Supervisor.supervisor(), String.t() | nil, iodata()) :: :ok
+  def post(sup, tag, data) do
+    for {_, pid, _, _} <- Supervisor.which_children(sup) do
+      GenServer.cast(pid, {:post, tag, data})
+    end
+
+    :ok
   end
 end
