@@ -9,46 +9,49 @@ defmodule Fluent.ConnectionError do
 end
 
 defmodule Fluent.Handler do
-  use GenServer
+  @behaviour :gen_event
 
   defmodule State do
     defstruct [:tag, :host, :port, :socket]
 
     @type t :: %__MODULE__{
             tag: String.t() | nil,
-            host: String.t(),
-            port: non_neg_integer,
+            host: charlist(),
+            port: non_neg_integer(),
             socket: :gen_tcp.socket()
           }
-  end
-
-  @spec start_link({String.t() | nil, non_neg_integer, non_neg_integer}) :: GenServer.on_start()
-  def start_link({tag, host, port}) do
-    GenServer.start_link(__MODULE__, {tag, host, port}, name: __MODULE__)
   end
 
   @impl true
   @spec init({String.t() | nil, non_neg_integer, non_neg_integer}) :: {:ok, State.t()}
   def init({tag, host, port}) do
-    {:ok, host} = String.to_charlist(host)
-    {:ok, socket} = :gen_tcp.connect(host, port, [:binary, {:packet, 0}])
-    {:ok, %State{tag: tag, host: host, port: port, socket: socket}}
+    host = String.to_charlist(host)
+    case :gen_tcp.connect(host, port, [:binary, {:packet, 0}]) do
+      {:ok, socket} ->
+        {:ok, %State{tag: tag, host: host, port: port, socket: socket}}
+      {:error, reason} ->
+        raise Fluent.ConnectionError, host: host, port: port, reason: reason
+    end
   end
 
   @impl true
-  @spec handle_cast({atom(), String.t() | nil, list()}) :: {:noreply, State.t()}
-  def handle_cast({:post, tag, data}, %State{} = state) when is_list(data) do
+  @spec handle_event({atom(), String.t() | nil, list()}, State.t()) :: {:ok, State.t()}
+  def handle_event({:post, tag, data}, %State{} = state) when is_list(data) do
     content = make_content(tag, {data}, state)
-    {:ok, state} = send(content, state, 3)
-    {:noreply, state}
+    send(content, state, 3)
+  end
+
+  @impl true
+  @spec handle_event(any(), State.t()) :: {:ok, State.t()}
+  def handle_call(_, %State{} = state) do
+    {:ok, state}
   end
 
   @spec make_content(String.t() | nil, iodata(), State.t()) :: binary()
-  defp make_content(tag, data, %State{host: host, port: port, tag: top_tag}) do
+  defp make_content(tag, data, %State{tag: top_tag}) do
     {msec, sec, _} = :os.timestamp()
     tag = make_tag(top_tag, tag)
     content = [tag, msec * 1_000_000 + sec, data]
-
     case :msgpack.pack(content) do
       packed_content when is_binary(content) ->
         packed_content
@@ -58,7 +61,7 @@ defmodule Fluent.Handler do
     end
   end
 
-  @defp make_tag(String.t() | nil, String.t() | nil) :: String.t()
+  @spec make_tag(String.t() | nil, String.t() | nil) :: String.t()
   defp make_tag(nil, tag), do: tag
   defp make_tag(top_tag, nil), do: make_tag(top_tag, "")
   defp make_tag(top_tag, tag), do: "#{top_tag}.#{tag}"
@@ -82,6 +85,7 @@ defmodule Fluent.Handler do
     end
   end
 
+  @impl true
   @spec terminate(any(), State.t()) :: :ok
   def terminate(_reason, %State{socket: socket}) do
     :gen_tcp.close(socket)
